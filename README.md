@@ -22,7 +22,8 @@ Source data (JSON/msgpack) ──→ serialization-safe (gRPC) ──→ Convert
 |----------|---------|-------------|
 | `SERIALIZATION_GRPC_ADDR` | `:9630` | gRPC listen address |
 | `MUXCORE_GRPC_ADDR` | – | Core gRPC address |
-| `MUXCORE_GRPC_INSECURE` | – | Disable TLS (dev mode) |
+| `MUXCORE_INSECURE_DISABLE_TLS` | – | Disable TLS when set to `true` (dev mode) |
+| `MUXCORE_MODULE_ID` | – | Override module ID (SDK) |
 
 ## RPCs
 
@@ -49,9 +50,8 @@ make docker  # build Docker image
 
 ## Capabilities
 
-- Registers with capability: `serialization.safe`
-- Implements `contracts.SerializationProvider`
-- Thread-safe with `sync.RWMutex`
+- Registers with capabilities: `serialization`, `serialization.safe`
+- Declares contract `SerializationProvider`; serves gRPC `SerializationService` (`Convert`, `SupportedTypes`)
 
 ## License
 

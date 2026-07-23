@@ -65,7 +65,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 		Roles:        []string{"infrastructure"},
 		Description:  "Safe content-type serialization provider supporting JSON and msgpack bidirectional conversion",
 		Author:       "MuxCore",
-		Capabilities: []string{contracts.CapabilitySerialization},
+		Capabilities: []string{contracts.CapabilitySerialization, "serialization.safe"},
 		Contracts: []contracts.ContractDeclaration{
 			{
 				Repo:      "github.com/Muxcore-Media/core/pkg/contracts",

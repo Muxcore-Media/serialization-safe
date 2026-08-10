@@ -16,7 +16,7 @@ func TestModuleInfo(t *testing.T) {
 	if info.ID == "" {
 		t.Error("module ID must not be empty")
 	}
-	if info.Version != "0.1.1" {
+	if info.Version != "0.1.2" {
 		t.Errorf("version = %q", info.Version)
 	}
 	if info.MinCoreVersion == "" {

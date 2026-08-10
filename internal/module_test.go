@@ -16,8 +16,8 @@ func TestModuleInfo(t *testing.T) {
 	if info.ID == "" {
 		t.Error("module ID must not be empty")
 	}
-	if info.Version == "" {
-		t.Error("module version must not be empty")
+	if info.Version != "0.1.1" {
+		t.Errorf("version = %q", info.Version)
 	}
 	if info.MinCoreVersion == "" {
 		t.Error("MinCoreVersion must not be empty")
@@ -33,6 +33,34 @@ func TestModuleInfo(t *testing.T) {
 	}
 	if info.Capabilities[0] != "serialization" {
 		t.Errorf("expected serialization capability, got %s", info.Capabilities[0])
+	}
+	foundSettings := false
+	for _, c := range info.Capabilities {
+		if c == "settings" {
+			foundSettings = true
+		}
+	}
+	if !foundSettings {
+		t.Error("expected settings capability")
+	}
+}
+
+func TestSettings_MaxPayloadBytes(t *testing.T) {
+	m := NewModule(Config{MaxPayloadBytes: 100})
+	if err := m.UpdateSetting("max_payload_bytes", "50"); err != nil {
+		t.Fatal(err)
+	}
+	if m.Settings()[0].Value != "50" {
+		t.Fatalf("value=%q", m.Settings()[0].Value)
+	}
+	ctx := context.Background()
+	_, err := m.Convert(ctx, &serializationv1.ConvertRequest{
+		SourceContentType: contracts.SafeContentTypeJSON,
+		TargetContentType: contracts.SafeContentTypeJSON,
+		Data:              make([]byte, 51),
+	})
+	if err == nil {
+		t.Fatal("expected payload too large")
 	}
 }
 

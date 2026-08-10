@@ -8,14 +8,21 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	serializationv1 "github.com/Muxcore-Media/core/proto/gen/muxcore/serialization/v1"
+	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
 	"github.com/vmihailenco/msgpack/v5"
 )
+
+const defaultMaxPayloadBytes = 4 << 20 // 4 MiB
 
 var (
 	supportedTypes = []string{
@@ -24,21 +31,24 @@ var (
 	}
 	errUnsupportedType       = errors.New("unsupported content type")
 	errUnsupportedConversion = errors.New("unsupported conversion between source and target types")
+	errPayloadTooLarge       = errors.New("payload exceeds max_payload_bytes")
 )
 
 type Module struct {
 	serializationv1.UnimplementedSerializationServiceServer
 
-	mu       sync.RWMutex
-	id       string
-	grpcAddr string
-	grpcSrv  *grpc.Server
-	lis      net.Listener
+	mu              sync.RWMutex
+	id              string
+	grpcAddr        string
+	grpcSrv         *grpc.Server
+	lis             net.Listener
+	maxPayloadBytes int
 }
 
 type Config struct {
-	ID       string
-	GRPCAddr string
+	ID              string
+	GRPCAddr        string
+	MaxPayloadBytes int
 }
 
 func NewModule(cfg Config) *Module {
@@ -51,9 +61,19 @@ func NewModule(cfg Config) *Module {
 	if v := os.Getenv("SERIALIZATION_GRPC_ADDR"); v != "" {
 		cfg.GRPCAddr = v
 	}
+	maxBytes := cfg.MaxPayloadBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxPayloadBytes
+	}
+	if v := strings.TrimSpace(os.Getenv("SERIALIZATION_MAX_PAYLOAD_BYTES")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxBytes = n
+		}
+	}
 	return &Module{
-		id:       cfg.ID,
-		grpcAddr: cfg.GRPCAddr,
+		id:              cfg.ID,
+		grpcAddr:        cfg.GRPCAddr,
+		maxPayloadBytes: maxBytes,
 	}
 }
 
@@ -61,11 +81,11 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:           m.id,
 		Name:         "Serialization Safe",
-		Version:      "0.1.0",
+		Version:      "0.1.1",
 		Roles:        []string{"infrastructure"},
 		Description:  "Safe content-type serialization provider supporting JSON and msgpack bidirectional conversion",
 		Author:       "MuxCore",
-		Capabilities: []string{contracts.CapabilitySerialization, "serialization.safe"},
+		Capabilities: []string{contracts.CapabilitySerialization, "serialization.safe", "settings"},
 		Contracts: []contracts.ContractDeclaration{
 			{
 				Repo:      "github.com/Muxcore-Media/core/pkg/contracts",
@@ -84,13 +104,17 @@ func (m *Module) Init(ctx context.Context) error {
 		return fmt.Errorf("listen %s: %w", m.grpcAddr, err)
 	}
 	m.lis = lis
-	slog.Info("serialization-safe initialized", "addr", m.grpcAddr)
+	m.mu.RLock()
+	maxBytes := m.maxPayloadBytes
+	m.mu.RUnlock()
+	slog.Info("serialization-safe initialized", "addr", m.grpcAddr, "max_payload_bytes", maxBytes)
 	return nil
 }
 
 func (m *Module) Start(ctx context.Context) error {
 	m.grpcSrv = grpc.NewServer()
 	serializationv1.RegisterSerializationServiceServer(m.grpcSrv, m)
+	modulesdk.RegisterSettings(m.grpcSrv, m.id, m)
 
 	go func() {
 		slog.Info("serialization-safe gRPC service started", "addr", m.grpcAddr)
@@ -117,6 +141,13 @@ func (m *Module) Convert(ctx context.Context, req *serializationv1.ConvertReques
 	src := req.GetSourceContentType()
 	tgt := req.GetTargetContentType()
 	data := req.GetData()
+
+	m.mu.RLock()
+	maxBytes := m.maxPayloadBytes
+	m.mu.RUnlock()
+	if maxBytes > 0 && len(data) > maxBytes {
+		return nil, status.Errorf(codes.InvalidArgument, "%s: %d > %d", errPayloadTooLarge, len(data), maxBytes)
+	}
 
 	if !isSupported(src) {
 		return nil, fmt.Errorf("%w: %s", errUnsupportedType, src)

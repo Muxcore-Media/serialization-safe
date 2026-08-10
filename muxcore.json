@@ -1,14 +1,15 @@
 {
   "name": "Serialization Safe",
   "description": "Safe content-type serialization provider supporting JSON and msgpack bidirectional conversion",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "MuxCore",
   "roles": [
     "infrastructure"
   ],
   "capabilities": [
     "serialization",
-    "serialization.safe"
+    "serialization.safe",
+    "settings"
   ],
   "contracts": [
     {

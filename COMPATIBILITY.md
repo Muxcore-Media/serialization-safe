@@ -10,9 +10,10 @@
 
 | Capability | Status |
 |------------|--------|
-| `serialization` / related | Current (see muxcore.json) |
+| `serialization` | Current |
+| `serialization.safe` | Current |
 
-Supported content types: `application/json`, `application/msgpack`.
+Contract: `SerializationProvider`. Supported content types: `application/json`, `application/msgpack`.
 
 ## Breaking Changes
 

@@ -20,7 +20,7 @@ Source data (JSON/msgpack) ──→ serialization-safe (gRPC) ──→ Convert
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SERIALIZATION_GRPC_ADDR` | `:9630` | gRPC listen address |
+| `SERIALIZATION_GRPC_ADDR` | `:9635` | gRPC listen address |
 | `MUXCORE_GRPC_ADDR` | – | Core gRPC address |
 | `MUXCORE_INSECURE_DISABLE_TLS` | – | Disable TLS when set to `true` (dev mode) |
 | `MUXCORE_MODULE_ID` | – | Override module ID (SDK) |

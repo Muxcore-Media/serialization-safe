@@ -27,4 +27,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Serialization sidecar: `Convert` between `application/json` and `application/msgpack`, plus `SupportedTypes`.
-- gRPC listen default `:9630` (`SERIALIZATION_GRPC_ADDR`).
+- gRPC listen default `:9635` (`SERIALIZATION_GRPC_ADDR`).

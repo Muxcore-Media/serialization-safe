@@ -56,7 +56,7 @@ func NewModule(cfg Config) *Module {
 		cfg.ID = "serialization-safe"
 	}
 	if cfg.GRPCAddr == "" {
-		cfg.GRPCAddr = ":9630"
+		cfg.GRPCAddr = ":9635"
 	}
 	if v := os.Getenv("SERIALIZATION_GRPC_ADDR"); v != "" {
 		cfg.GRPCAddr = v

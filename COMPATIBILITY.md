@@ -4,7 +4,8 @@
 
 | Module Version | Core Version | Status |
 |----------------|-------------|--------|
-| v0.1.0         | v0.5.0+     | Current |
+| v0.1.2         | v0.5.8+     | Current |
+| v0.1.0         | v0.5.0+     | Superseded |
 
 ## Capabilities
 
@@ -12,6 +13,7 @@
 |------------|--------|
 | `serialization` | Current |
 | `serialization.safe` | Current |
+| `settings` | Current |
 
 Contract: `SerializationProvider`. Supported content types: `application/json`, `application/msgpack`.
 

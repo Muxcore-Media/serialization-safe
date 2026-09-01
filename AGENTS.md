@@ -7,8 +7,8 @@ MuxCore sidecar module (`serialization-safe`). Workspace deploy and SSH: [`../AG
 | Field | Value |
 |-------|-------|
 | Directory | `serialization-safe` |
-| Capabilities | see muxcore.json |
-| Contracts | none declared |
+| Capabilities | `serialization`, `serialization.safe`, `settings` |
+| Contracts | `SerializationProvider` |
 
 ## Agent rules
 

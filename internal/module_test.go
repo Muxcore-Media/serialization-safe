@@ -3,15 +3,30 @@ package internal
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	serializationv1 "github.com/Muxcore-Media/core/proto/gen/muxcore/serialization/v1"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
+func newTestModule(t *testing.T, cfg Config) *Module {
+	t.Helper()
+	m, err := NewModule(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
 func TestModuleInfo(t *testing.T) {
-	m := NewModule(Config{})
+	m := newTestModule(t, Config{})
 	info := m.Info()
 	if info.ID == "" {
 		t.Error("module ID must not be empty")
@@ -23,16 +38,13 @@ func TestModuleInfo(t *testing.T) {
 		t.Error("MinCoreVersion must not be empty")
 	}
 	if len(info.Contracts) == 0 {
-		t.Error("Contracts must not be empty")
+		t.Fatal("Contracts must not be empty")
 	}
 	if info.Contracts[0].Interface != "SerializationProvider" {
 		t.Errorf("expected SerializationProvider contract, got %s", info.Contracts[0].Interface)
 	}
-	if len(info.Capabilities) == 0 {
-		t.Error("Capabilities must not be empty")
-	}
-	if info.Capabilities[0] != "serialization" {
-		t.Errorf("expected serialization capability, got %s", info.Capabilities[0])
+	if info.HTTPAddr != "" {
+		t.Errorf("HTTPAddr must be empty for gRPC-only module, got %q", info.HTTPAddr)
 	}
 	foundSettings := false
 	for _, c := range info.Capabilities {
@@ -45,8 +57,41 @@ func TestModuleInfo(t *testing.T) {
 	}
 }
 
+func TestDefaultGRPCAddr(t *testing.T) {
+	m := newTestModule(t, Config{})
+	if m.grpcAddr != defaultGRPCAddr {
+		t.Fatalf("grpcAddr=%q want %q", m.grpcAddr, defaultGRPCAddr)
+	}
+}
+
+func TestNewModuleInvalidMaxPayloadEnv(t *testing.T) {
+	t.Setenv("SERIALIZATION_MAX_PAYLOAD_BYTES", "nope")
+	if _, err := NewModule(Config{}); err == nil {
+		t.Fatal("expected error for invalid env")
+	}
+	t.Setenv("SERIALIZATION_MAX_PAYLOAD_BYTES", "0")
+	if _, err := NewModule(Config{}); err == nil {
+		t.Fatal("expected error for zero env")
+	}
+}
+
+func TestNewModuleEnvBootstrap(t *testing.T) {
+	t.Setenv("SERIALIZATION_MAX_PAYLOAD_BYTES", "8192")
+	t.Setenv("SERIALIZATION_GRPC_ADDR", "127.0.0.1:19635")
+	m, err := NewModule(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.maxPayloadBytes != 8192 {
+		t.Fatalf("maxPayloadBytes=%d", m.maxPayloadBytes)
+	}
+	if m.grpcAddr != "127.0.0.1:19635" {
+		t.Fatalf("grpcAddr=%q", m.grpcAddr)
+	}
+}
+
 func TestSettings_MaxPayloadBytes(t *testing.T) {
-	m := NewModule(Config{MaxPayloadBytes: 100})
+	m := newTestModule(t, Config{MaxPayloadBytes: 100})
 	if err := m.UpdateSetting("max_payload_bytes", "50"); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +99,7 @@ func TestSettings_MaxPayloadBytes(t *testing.T) {
 		t.Fatalf("value=%q", m.Settings()[0].Value)
 	}
 	ctx := context.Background()
-	_, err := m.Convert(ctx, &serializationv1.ConvertRequest{
+	_, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
 		SourceContentType: contracts.SafeContentTypeJSON,
 		TargetContentType: contracts.SafeContentTypeJSON,
 		Data:              make([]byte, 51),
@@ -62,12 +107,68 @@ func TestSettings_MaxPayloadBytes(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected payload too large")
 	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument {
+		t.Fatalf("code=%v err=%v", status.Code(err), err)
+	}
+}
+
+func TestSettingsUnknownKey(t *testing.T) {
+	m := newTestModule(t, Config{})
+	if err := m.UpdateSetting("bogus", "1"); err == nil {
+		t.Fatal("expected unknown setting error")
+	}
+}
+
+func TestSettingsEnvAlias(t *testing.T) {
+	m := newTestModule(t, Config{MaxPayloadBytes: 100})
+	if err := m.UpdateSetting("SERIALIZATION_MAX_PAYLOAD_BYTES", "80"); err != nil {
+		t.Fatal(err)
+	}
+	if m.Settings()[0].Value != "80" {
+		t.Fatalf("value=%q", m.Settings()[0].Value)
+	}
+}
+
+func TestSettingsInvalidUpdate(t *testing.T) {
+	m := newTestModule(t, Config{})
+	if err := m.UpdateSetting("max_payload_bytes", "-1"); err == nil {
+		t.Fatal("expected validation error")
+	}
+	if err := m.UpdateSetting("max_payload_bytes", "abc"); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestSerializationProviderContract(t *testing.T) {
+	m := newTestModule(t, Config{})
+	types := m.SupportedTypes()
+	if len(types) != 2 {
+		t.Fatalf("types=%v", types)
+	}
+
+	type payload struct {
+		Name  string `json:"name"`
+		Count int64  `json:"count"`
+	}
+	in := payload{Name: "x", Count: 7}
+	raw, err := m.Marshal(contracts.SafeContentTypeMsgpack, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out payload
+	if err := m.Unmarshal(contracts.SafeContentTypeMsgpack, raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out != in {
+		t.Fatalf("got %+v want %+v", out, in)
+	}
 }
 
 func TestSupportedTypes(t *testing.T) {
-	m := NewModule(Config{})
-	ctx := context.Background()
-	resp, err := m.SupportedTypes(ctx, &serializationv1.SupportedTypesRequest{})
+	m := newTestModule(t, Config{})
+	srv := &grpcServer{mod: m}
+	resp, err := srv.SupportedTypes(context.Background(), &serializationv1.SupportedTypesRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,11 +184,11 @@ func TestSupportedTypes(t *testing.T) {
 }
 
 func TestJSONToMsgpack(t *testing.T) {
-	m := NewModule(Config{})
+	m := newTestModule(t, Config{})
 	ctx := context.Background()
 
 	input := []byte(`{"name":"test","count":42,"active":true,"tags":["a","b"]}`)
-	resp, err := m.Convert(ctx, &serializationv1.ConvertRequest{
+	resp, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
 		SourceContentType: contracts.SafeContentTypeJSON,
 		TargetContentType: contracts.SafeContentTypeMsgpack,
 		Data:              input,
@@ -107,8 +208,8 @@ func TestJSONToMsgpack(t *testing.T) {
 	if obj["name"] != "test" {
 		t.Errorf("expected name=test, got %v", obj["name"])
 	}
-	if obj["count"] != float64(42) {
-		t.Errorf("expected count=42, got %v", obj["count"])
+	if obj["count"] != int64(42) {
+		t.Errorf("expected count=int64(42), got %v (%T)", obj["count"], obj["count"])
 	}
 	if obj["active"] != true {
 		t.Errorf("expected active=true, got %v", obj["active"])
@@ -116,7 +217,7 @@ func TestJSONToMsgpack(t *testing.T) {
 }
 
 func TestMsgpackToJSON(t *testing.T) {
-	m := NewModule(Config{})
+	m := newTestModule(t, Config{})
 	ctx := context.Background()
 
 	original := map[string]any{"name": "test", "value": 3.14}
@@ -125,7 +226,7 @@ func TestMsgpackToJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := m.Convert(ctx, &serializationv1.ConvertRequest{
+	resp, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
 		SourceContentType: contracts.SafeContentTypeMsgpack,
 		TargetContentType: contracts.SafeContentTypeJSON,
 		Data:              mp,
@@ -147,12 +248,12 @@ func TestMsgpackToJSON(t *testing.T) {
 }
 
 func TestRoundTrip(t *testing.T) {
-	m := NewModule(Config{})
+	m := newTestModule(t, Config{})
 	ctx := context.Background()
 
 	original := []byte(`{"a":1,"b":"two","c":[1,2,3]}`)
 
-	toMsgpack, err := m.Convert(ctx, &serializationv1.ConvertRequest{
+	toMsgpack, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
 		SourceContentType: contracts.SafeContentTypeJSON,
 		TargetContentType: contracts.SafeContentTypeMsgpack,
 		Data:              original,
@@ -161,7 +262,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backToJSON, err := m.Convert(ctx, &serializationv1.ConvertRequest{
+	backToJSON, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
 		SourceContentType: contracts.SafeContentTypeMsgpack,
 		TargetContentType: contracts.SafeContentTypeJSON,
 		Data:              toMsgpack.Result,
@@ -186,11 +287,11 @@ func TestRoundTrip(t *testing.T) {
 }
 
 func TestPassthrough(t *testing.T) {
-	m := NewModule(Config{})
+	m := newTestModule(t, Config{})
 	ctx := context.Background()
 
 	input := []byte(`{"unchanged":true}`)
-	resp, err := m.Convert(ctx, &serializationv1.ConvertRequest{
+	resp, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
 		SourceContentType: contracts.SafeContentTypeJSON,
 		TargetContentType: contracts.SafeContentTypeJSON,
 		Data:              input,
@@ -203,11 +304,41 @@ func TestPassthrough(t *testing.T) {
 	}
 }
 
+func TestCharsetContentType(t *testing.T) {
+	m := newTestModule(t, Config{})
+	ctx := context.Background()
+	input := []byte(`{"ok":true}`)
+	_, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
+		SourceContentType: "application/json; charset=utf-8",
+		TargetContentType: contracts.SafeContentTypeMsgpack,
+		Data:              input,
+	})
+	if err != nil {
+		t.Fatalf("charset source: %v", err)
+	}
+}
+
+func TestProtobufRejected(t *testing.T) {
+	m := newTestModule(t, Config{})
+	ctx := context.Background()
+	_, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
+		SourceContentType: contracts.SafeContentTypeProtobuf,
+		TargetContentType: contracts.SafeContentTypeJSON,
+		Data:              []byte{1, 2, 3},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("code=%v err=%v", status.Code(err), err)
+	}
+}
+
 func TestUnsupportedSource(t *testing.T) {
-	m := NewModule(Config{})
+	m := newTestModule(t, Config{})
 	ctx := context.Background()
 
-	_, err := m.Convert(ctx, &serializationv1.ConvertRequest{
+	_, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
 		SourceContentType: "application/yaml",
 		TargetContentType: contracts.SafeContentTypeJSON,
 		Data:              []byte("key: value\n"),
@@ -215,13 +346,16 @@ func TestUnsupportedSource(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported source type")
 	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code=%v", status.Code(err))
+	}
 }
 
 func TestUnsupportedTarget(t *testing.T) {
-	m := NewModule(Config{})
+	m := newTestModule(t, Config{})
 	ctx := context.Background()
 
-	_, err := m.Convert(ctx, &serializationv1.ConvertRequest{
+	_, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
 		SourceContentType: contracts.SafeContentTypeJSON,
 		TargetContentType: "application/gob",
 		Data:              []byte(`{}`),
@@ -229,14 +363,17 @@ func TestUnsupportedTarget(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported target type")
 	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code=%v", status.Code(err))
+	}
 }
 
 func TestJSONArray(t *testing.T) {
-	m := NewModule(Config{})
+	m := newTestModule(t, Config{})
 	ctx := context.Background()
 
 	input := []byte(`[1,"two",{"three":3}]`)
-	resp, err := m.Convert(ctx, &serializationv1.ConvertRequest{
+	resp, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
 		SourceContentType: contracts.SafeContentTypeJSON,
 		TargetContentType: contracts.SafeContentTypeMsgpack,
 		Data:              input,
@@ -255,10 +392,10 @@ func TestJSONArray(t *testing.T) {
 }
 
 func TestInvalidJSON(t *testing.T) {
-	m := NewModule(Config{})
+	m := newTestModule(t, Config{})
 	ctx := context.Background()
 
-	_, err := m.Convert(ctx, &serializationv1.ConvertRequest{
+	_, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
 		SourceContentType: contracts.SafeContentTypeJSON,
 		TargetContentType: contracts.SafeContentTypeMsgpack,
 		Data:              []byte(`{invalid}`),
@@ -266,10 +403,40 @@ func TestInvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code=%v", status.Code(err))
+	}
+}
+
+func TestDecodeDepthLimit(t *testing.T) {
+	m := newTestModule(t, Config{})
+	ctx := context.Background()
+	var b strings.Builder
+	for i := 0; i < maxDecodeDepth+2; i++ {
+		b.WriteString(`{"n":`)
+	}
+	b.WriteString(`1`)
+	for i := 0; i < maxDecodeDepth+2; i++ {
+		b.WriteByte('}')
+	}
+	_, err := m.convertRPC(ctx, &serializationv1.ConvertRequest{
+		SourceContentType: contracts.SafeContentTypeJSON,
+		TargetContentType: contracts.SafeContentTypeMsgpack,
+		Data:              []byte(b.String()),
+	})
+	if err == nil {
+		t.Fatal("expected depth limit error")
+	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code=%v err=%v", status.Code(err), err)
+	}
 }
 
 func TestLifecycle(t *testing.T) {
-	m := NewModule(Config{GRPCAddr: ":0"})
+	m, err := NewModule(Config{GRPCAddr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 
 	if err := m.Init(ctx); err != nil {
@@ -281,15 +448,63 @@ func TestLifecycle(t *testing.T) {
 	if err := m.Health(ctx); err != nil {
 		t.Fatal("expected health to pass after start")
 	}
+
+	addr := m.ListenerAddr()
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	rpc := serializationv1.NewSerializationServiceClient(conn)
+	typesResp, err := rpc.SupportedTypes(ctx, &serializationv1.SupportedTypesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(typesResp.GetContentTypes()) != 2 {
+		t.Fatalf("types=%v", typesResp.GetContentTypes())
+	}
+
+	convResp, err := rpc.Convert(ctx, &serializationv1.ConvertRequest{
+		SourceContentType: contracts.SafeContentTypeJSON,
+		TargetContentType: contracts.SafeContentTypeMsgpack,
+		Data:              []byte(`{"live":true}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(convResp.GetResult()) == 0 {
+		t.Fatal("expected convert result")
+	}
+
 	if err := m.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if err := m.Health(ctx); err == nil {
+		t.Fatal("expected health to fail after stop")
+	}
 }
 
-func TestHealth(t *testing.T) {
-	m := NewModule(Config{})
+func TestHealthBeforeInit(t *testing.T) {
+	m := newTestModule(t, Config{})
+	if err := m.Health(context.Background()); err == nil {
+		t.Fatal("expected health to fail before init")
+	}
+}
+
+func TestStopWithoutStartClosesListener(t *testing.T) {
+	m, err := NewModule(Config{GRPCAddr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
-	if err := m.Health(ctx); err != nil {
-		t.Fatal("expected health to pass")
+	if err := m.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if m.lis != nil {
+		t.Fatal("listener should be nil after stop")
 	}
 }

@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,16 +12,19 @@ import (
 	"sync"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	serializationv1 "github.com/Muxcore-Media/core/proto/gen/muxcore/serialization/v1"
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
-	"github.com/vmihailenco/msgpack/v5"
 )
 
-const defaultMaxPayloadBytes = 4 << 20 // 4 MiB
+const (
+	defaultMaxPayloadBytes = 4 << 20 // 4 MiB
+	defaultGRPCAddr        = "127.0.0.1:9635"
+)
+
+// Version is injected at link time via -X main.version.
+var Version = "0.1.2"
 
 var (
 	supportedTypes = []string{
@@ -35,8 +37,6 @@ var (
 )
 
 type Module struct {
-	serializationv1.UnimplementedSerializationServiceServer
-
 	mu              sync.RWMutex
 	id              string
 	grpcAddr        string
@@ -51,14 +51,14 @@ type Config struct {
 	MaxPayloadBytes int
 }
 
-func NewModule(cfg Config) *Module {
+func NewModule(cfg Config) (*Module, error) {
 	if cfg.ID == "" {
 		cfg.ID = "serialization-safe"
 	}
 	if cfg.GRPCAddr == "" {
-		cfg.GRPCAddr = ":9635"
+		cfg.GRPCAddr = defaultGRPCAddr
 	}
-	if v := os.Getenv("SERIALIZATION_GRPC_ADDR"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("SERIALIZATION_GRPC_ADDR")); v != "" {
 		cfg.GRPCAddr = v
 	}
 	maxBytes := cfg.MaxPayloadBytes
@@ -66,22 +66,28 @@ func NewModule(cfg Config) *Module {
 		maxBytes = defaultMaxPayloadBytes
 	}
 	if v := strings.TrimSpace(os.Getenv("SERIALIZATION_MAX_PAYLOAD_BYTES")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			maxBytes = n
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("invalid SERIALIZATION_MAX_PAYLOAD_BYTES %q", v)
 		}
+		maxBytes = n
 	}
 	return &Module{
 		id:              cfg.ID,
 		grpcAddr:        cfg.GRPCAddr,
 		maxPayloadBytes: maxBytes,
-	}
+	}, nil
 }
 
 func (m *Module) Info() contracts.ModuleInfo {
+	ver := Version
+	if ver == "" {
+		ver = "0.0.0-dev"
+	}
 	return contracts.ModuleInfo{
 		ID:           m.id,
 		Name:         "Serialization Safe",
-		Version:      "0.1.2",
+		Version:      ver,
 		Roles:        []string{"infrastructure"},
 		Description:  "Safe content-type serialization provider supporting JSON and msgpack bidirectional conversion",
 		Author:       "MuxCore",
@@ -94,7 +100,6 @@ func (m *Module) Info() contracts.ModuleInfo {
 			},
 		},
 		MinCoreVersion: "0.5.0",
-		HTTPAddr:       m.grpcAddr,
 	}
 }
 
@@ -112,8 +117,15 @@ func (m *Module) Init(ctx context.Context) error {
 }
 
 func (m *Module) Start(ctx context.Context) error {
-	m.grpcSrv = grpc.NewServer()
-	serializationv1.RegisterSerializationServiceServer(m.grpcSrv, m)
+	m.mu.RLock()
+	maxBytes := m.maxPayloadBytes
+	m.mu.RUnlock()
+
+	m.grpcSrv = grpc.NewServer(
+		grpc.MaxRecvMsgSize(maxBytes),
+		grpc.MaxSendMsgSize(maxBytes),
+	)
+	serializationv1.RegisterSerializationServiceServer(m.grpcSrv, &grpcServer{mod: m})
 	modulesdk.RegisterSettings(m.grpcSrv, m.id, m)
 
 	go func() {
@@ -128,97 +140,78 @@ func (m *Module) Start(ctx context.Context) error {
 func (m *Module) Stop(ctx context.Context) error {
 	if m.grpcSrv != nil {
 		m.grpcSrv.GracefulStop()
+		m.grpcSrv = nil
+	}
+	if m.lis != nil {
+		_ = m.lis.Close()
+		m.lis = nil
 	}
 	slog.Info("serialization-safe stopped")
 	return nil
 }
 
 func (m *Module) Health(ctx context.Context) error {
+	m.mu.RLock()
+	lis := m.lis
+	srv := m.grpcSrv
+	m.mu.RUnlock()
+	if lis == nil {
+		return errors.New("listener not initialized")
+	}
+	if srv == nil {
+		return errors.New("gRPC server not serving")
+	}
 	return nil
 }
 
-func (m *Module) Convert(ctx context.Context, req *serializationv1.ConvertRequest) (*serializationv1.ConvertResponse, error) {
-	src := req.GetSourceContentType()
-	tgt := req.GetTargetContentType()
-	data := req.GetData()
+// Marshal serializes v using the requested content type.
+func (m *Module) Marshal(contentType string, v any) ([]byte, error) {
+	m.mu.RLock()
+	maxBytes := m.maxPayloadBytes
+	m.mu.RUnlock()
 
+	out, err := marshalValue(contentType, v)
+	if err != nil {
+		return nil, err
+	}
+	if maxBytes > 0 && len(out) > maxBytes {
+		return nil, fmt.Errorf("%s: %d > %d", errPayloadTooLarge, len(out), maxBytes)
+	}
+	return out, nil
+}
+
+// Unmarshal deserializes data into v using the requested content type.
+func (m *Module) Unmarshal(contentType string, data []byte, v any) error {
 	m.mu.RLock()
 	maxBytes := m.maxPayloadBytes
 	m.mu.RUnlock()
 	if maxBytes > 0 && len(data) > maxBytes {
-		return nil, status.Errorf(codes.InvalidArgument, "%s: %d > %d", errPayloadTooLarge, len(data), maxBytes)
+		return fmt.Errorf("%s: %d > %d", errPayloadTooLarge, len(data), maxBytes)
 	}
-
-	if !isSupported(src) {
-		return nil, fmt.Errorf("%w: %s", errUnsupportedType, src)
-	}
-	if !isSupported(tgt) {
-		return nil, fmt.Errorf("%w: %s", errUnsupportedType, tgt)
-	}
-
-	if src == tgt {
-		return &serializationv1.ConvertResponse{Result: data}, nil
-	}
-
-	result, err := convert(src, tgt, data)
-	if err != nil {
-		return nil, err
-	}
-	return &serializationv1.ConvertResponse{Result: result}, nil
+	return unmarshalValue(contentType, data, v)
 }
 
-func (m *Module) SupportedTypes(ctx context.Context, req *serializationv1.SupportedTypesRequest) (*serializationv1.SupportedTypesResponse, error) {
-	return &serializationv1.SupportedTypesResponse{
-		ContentTypes: supportedTypes,
-	}, nil
+// SupportedTypes returns supported content types for SerializationProvider.
+func (m *Module) SupportedTypes() []string {
+	out := make([]string, len(supportedTypes))
+	copy(out, supportedTypes)
+	return out
 }
 
-func convert(src, tgt string, data []byte) ([]byte, error) {
-	if src == tgt {
-		return data, nil
-	}
-
-	switch {
-	case src == contracts.SafeContentTypeJSON && tgt == contracts.SafeContentTypeMsgpack:
-		return jsonToMsgpack(data)
-	case src == contracts.SafeContentTypeMsgpack && tgt == contracts.SafeContentTypeJSON:
-		return msgpackToJSON(data)
-	default:
-		return nil, fmt.Errorf("%w: %s -> %s", errUnsupportedConversion, src, tgt)
-	}
+// SetListener attaches a net.Listener before Start (tests).
+func (m *Module) SetListener(lis net.Listener) {
+	m.lis = lis
 }
 
-func jsonToMsgpack(data []byte) ([]byte, error) {
-	var v any
-	if err := json.Unmarshal(data, &v); err != nil {
-		return nil, fmt.Errorf("json decode: %w", err)
+// ListenerAddr returns the bound listen address (tests).
+func (m *Module) ListenerAddr() string {
+	if m.lis == nil {
+		return ""
 	}
-	out, err := msgpack.Marshal(v)
-	if err != nil {
-		return nil, fmt.Errorf("msgpack encode: %w", err)
-	}
-	return out, nil
+	return m.lis.Addr().String()
 }
 
-func msgpackToJSON(data []byte) ([]byte, error) {
-	var v any
-	if err := msgpack.Unmarshal(data, &v); err != nil {
-		return nil, fmt.Errorf("msgpack decode: %w", err)
-	}
-	out, err := json.Marshal(v)
-	if err != nil {
-		return nil, fmt.Errorf("json encode: %w", err)
-	}
-	return out, nil
-}
-
-func isSupported(ct string) bool {
-	for _, s := range supportedTypes {
-		if s == ct {
-			return true
-		}
-	}
-	return false
-}
-
-var _ contracts.Module = (*Module)(nil)
+var (
+	_ contracts.Module                = (*Module)(nil)
+	_ contracts.SerializationProvider = (*Module)(nil)
+)

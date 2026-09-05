@@ -28,7 +28,7 @@ ser := client.New(conn)
 out, err := ser.Marshal(contracts.SafeContentTypeMsgpack, payload)
 ```
 
-> **Security:** gRPC listens on **`127.0.0.1:9635`** by default with no auth on the serialization RPCs. Treat it as a LAN decode endpoint; use mesh TLS in production.
+> **Security:** gRPC listens on **`127.0.0.1:9635`** (loopback) with **TLS enabled by default**. Auto-generated dev certificates are stored under `~/.muxcore/tls/serialization-safe` (or `SERIALIZATION_TLS_DIR`). Set `MUXCORE_INSECURE_DISABLE_TLS=true` for plaintext dev only. Override certs with `MUXCORE_TLS_CERT` / `MUXCORE_TLS_KEY` or `SERIALIZATION_TLS_CERT` / `SERIALIZATION_TLS_KEY`.
 
 ## Configuration
 
@@ -38,7 +38,9 @@ out, err := ser.Marshal(contracts.SafeContentTypeMsgpack, payload)
 | `SERIALIZATION_MAX_PAYLOAD_BYTES` | `4194304` (4 MiB) | Reject `Convert` payloads larger than this size |
 | `MVP_ENABLE_SERIALIZATION_SAFE` | `0` | Set to `1` in `_mvp/.env` to start the sidecar via `run-host.sh` |
 | `MUXCORE_GRPC_ADDR` | – | Core gRPC address |
-| `MUXCORE_INSECURE_DISABLE_TLS` | – | Disable TLS when set to `true` (dev mode) |
+| `MUXCORE_INSECURE_DISABLE_TLS` | – | Disable TLS when set to `true` (dev mode; applies to module listener and core dial) |
+| `SERIALIZATION_TLS_DIR` | `~/.muxcore/tls/serialization-safe` | Auto-generated server TLS cert directory |
+| `SERIALIZATION_TLS_CERT` / `SERIALIZATION_TLS_KEY` | – | Explicit server TLS cert/key (overrides auto-gen) |
 | `MUXCORE_MODULE_ID` | `serialization-safe` | Override module ID (SDK) |
 
 Runtime limits are also exposed via the **`settings`** capability (`max_payload_bytes` / `SERIALIZATION_MAX_PAYLOAD_BYTES` alias) for admin-ui.

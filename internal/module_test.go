@@ -433,6 +433,7 @@ func TestDecodeDepthLimit(t *testing.T) {
 }
 
 func TestLifecycle(t *testing.T) {
+	t.Setenv("MUXCORE_INSECURE_DISABLE_TLS", "true")
 	m, err := NewModule(Config{GRPCAddr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatal(err)
@@ -489,6 +490,29 @@ func TestHealthBeforeInit(t *testing.T) {
 	m := newTestModule(t, Config{})
 	if err := m.Health(context.Background()); err == nil {
 		t.Fatal("expected health to fail before init")
+	}
+}
+
+func TestModuleLifecycleTLS(t *testing.T) {
+	t.Setenv("MUXCORE_INSECURE_DISABLE_TLS", "")
+	t.Setenv("MUXCORE_GRPC_INSECURE", "")
+
+	dir := t.TempDir()
+	t.Setenv("SERIALIZATION_TLS_DIR", dir)
+
+	m, err := NewModule(Config{GRPCAddr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := m.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := m.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
 	}
 }
 

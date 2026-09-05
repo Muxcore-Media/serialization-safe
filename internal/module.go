@@ -12,10 +12,12 @@ import (
 	"sync"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	serializationv1 "github.com/Muxcore-Media/core/proto/gen/muxcore/serialization/v1"
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
+	"github.com/Muxcore-Media/serialization-safe/internal/grpctls"
 )
 
 const (
@@ -121,10 +123,25 @@ func (m *Module) Start(ctx context.Context) error {
 	maxBytes := m.maxPayloadBytes
 	m.mu.RUnlock()
 
-	m.grpcSrv = grpc.NewServer(
+	var grpcOpts []grpc.ServerOption
+	grpcOpts = append(grpcOpts,
 		grpc.MaxRecvMsgSize(maxBytes),
 		grpc.MaxSendMsgSize(maxBytes),
 	)
+	tlsCfg, err := grpctls.ServerConfig()
+	if err != nil {
+		return fmt.Errorf("gRPC TLS: %w", err)
+	}
+	if tlsCfg != nil {
+		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+		slog.Info("serialization-safe gRPC TLS enabled", "addr", m.grpcAddr)
+	} else {
+		slog.Warn("serialization-safe gRPC listening without TLS (dev only)",
+			"addr", m.grpcAddr,
+			"hint", "unset MUXCORE_INSECURE_DISABLE_TLS for production",
+		)
+	}
+	m.grpcSrv = grpc.NewServer(grpcOpts...)
 	serializationv1.RegisterSerializationServiceServer(m.grpcSrv, &grpcServer{mod: m})
 	modulesdk.RegisterSettings(m.grpcSrv, m.id, m)
 

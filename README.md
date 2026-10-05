@@ -1,6 +1,6 @@
 # Serialization Safe
 
-[![CI](https://git.zem.systems/muxcore/serialization-safe/actions/workflows/ci.yml/badge.svg)](https://git.zem.systems/muxcore/serialization-safe/actions)
+[![CI](https://github.com/Muxcore-Media/serialization-safe/actions/workflows/ci.yml/badge.svg)](https://github.com/Muxcore-Media/serialization-safe/actions)
 [![Go Version](https://img.shields.io/badge/Go-1.26-blue)](https://go.dev/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 

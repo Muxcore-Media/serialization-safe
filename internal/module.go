@@ -145,9 +145,11 @@ func (m *Module) Start(ctx context.Context) error {
 	serializationv1.RegisterSerializationServiceServer(m.grpcSrv, &grpcServer{mod: m})
 	modulesdk.RegisterSettings(m.grpcSrv, m.id, m)
 
+	// Capture server and listener: Stop may clear m.grpcSrv before this goroutine runs.
+	srv, lis := m.grpcSrv, m.lis
 	go func() {
 		slog.Info("serialization-safe gRPC service started", "addr", m.grpcAddr)
-		if err := m.grpcSrv.Serve(m.lis); err != nil {
+		if err := srv.Serve(lis); err != nil {
 			slog.Error("serialization-safe gRPC serve error", "error", err)
 		}
 	}()

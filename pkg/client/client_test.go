@@ -19,6 +19,8 @@ const bufSize = 4 << 20
 
 func startBufconnModule(t *testing.T) (*internal.Module, *bufconn.Listener) {
 	t.Helper()
+	// The module enables TLS by default; this test dials plaintext over bufconn.
+	t.Setenv("MUXCORE_INSECURE_DISABLE_TLS", "true")
 	mod, err := internal.NewModule(internal.Config{MaxPayloadBytes: bufSize})
 	if err != nil {
 		t.Fatal(err)

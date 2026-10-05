@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
+	manifest "github.com/Muxcore-Media/serialization-safe"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -31,7 +33,7 @@ func TestModuleInfo(t *testing.T) {
 	if info.ID == "" {
 		t.Error("module ID must not be empty")
 	}
-	if info.Version != "0.1.2" {
+	if info.Version != modulesdk.ManifestVersion(manifest.ManifestJSON) {
 		t.Errorf("version = %q", info.Version)
 	}
 	if info.MinCoreVersion == "" {

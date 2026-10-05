@@ -12,7 +12,9 @@ import (
 var version = "0.0.0-dev"
 
 func main() {
-	internal.Version = version
+	if version != "" && version != "dev" && version != "0.0.0-dev" {
+		internal.Version = version
+	}
 	mod, err := internal.NewModule(internal.Config{})
 	if err != nil {
 		slog.Error("invalid module config", "error", err)

@@ -17,6 +17,7 @@ import (
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	serializationv1 "github.com/Muxcore-Media/core/proto/gen/muxcore/serialization/v1"
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
+	manifest "github.com/Muxcore-Media/serialization-safe"
 	"github.com/Muxcore-Media/serialization-safe/internal/grpctls"
 )
 
@@ -25,8 +26,8 @@ const (
 	defaultGRPCAddr        = "127.0.0.1:9635"
 )
 
-// Version is injected at link time via -X main.version.
-var Version = "0.1.2"
+// Version defaults to the muxcore.json version (ADR-0021); cmd/module may override it via -X main.version.
+var Version = modulesdk.ManifestVersion(manifest.ManifestJSON)
 
 var (
 	supportedTypes = []string{
